@@ -1,4 +1,4 @@
-﻿/* Copyright (c) 2010 Michael Lidgren
+/* Copyright (c) 2010 Michael Lidgren
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software
 and associated documentation files (the "Software"), to deal in the Software without
@@ -191,6 +191,9 @@ namespace Lidgren.Network
 				}
 
 				int bytesSent = NetFastSocket.SendTo(m_socket, data, 0, numBytes, SocketFlags.None, realTarget);
+				// CMU14: independent of optional statistics; only used by opted-in peers.
+				if (m_configuration.m_receiveInterleavePacketInterval > 0)
+					m_packetsSentSinceReceive++;
 				if (numBytes != bytesSent)
 					LogWarning($"Failed to send the full {numBytes}; only {bytesSent} bytes sent in packet!");
 

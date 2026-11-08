@@ -1,4 +1,4 @@
-﻿/* Copyright (c) 2010 Michael Lidgren
+/* Copyright (c) 2010 Michael Lidgren
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software
 and associated documentation files (the "Software"), to deal in the Software without
@@ -80,6 +80,7 @@ namespace Lidgren.Network
 		internal int m_sendBufferSize;
 		internal int m_maximumPacketsPerHeartbeat;
 		internal int m_maximumBytesPerHeartbeat;
+		internal int m_receiveInterleavePacketInterval; // CMU14
 		internal float m_resendHandshakeInterval;
 		internal int m_maximumHandshakeAttempts;
 		internal float m_connectionApprovalTimeout;
@@ -531,6 +532,26 @@ namespace Lidgren.Network
 				m_maximumBytesPerHeartbeat = value;
 			}
 		}
+
+		/// <summary>
+		/// Gets or sets the sent-packet interval for extra nonblocking receive checks between completed
+		/// connection heartbeats. Zero disables interleaving. A single connection can exceed this interval.
+		/// The normal per-heartbeat receive packet and byte budgets still apply. Cannot be changed once initialized.
+		/// </summary>
+		// CMU14 Begin
+		public int ReceiveInterleavePacketInterval
+		{
+			get { return m_receiveInterleavePacketInterval; }
+			set
+			{
+				if (m_isLocked)
+					throw new NetException(c_isLockedMessage);
+				if (value < 0)
+					throw new NetException("ReceiveInterleavePacketInterval must be nonnegative");
+				m_receiveInterleavePacketInterval = value;
+			}
+		}
+		// CMU14 End
 
 		/// <summary>
 		/// Gets or sets if the NetPeer should accept incoming connections. This is automatically set to true in NetServer and false in NetClient.
