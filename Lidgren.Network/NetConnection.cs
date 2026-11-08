@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Threading;
@@ -242,6 +242,11 @@ namespace Lidgren.Network
 					}
 				}
 
+			}
+
+			// CMU14: retire received ACKs before each resend scan without changing the default peer schedule.
+			if ((frameCounter % m_messageCoalesceFrames) == 0 || m_peerConfiguration.m_receiveInterleavePacketInterval > 0)
+			{
 				//
 				// Parse incoming acks (may trigger resends)
 				//

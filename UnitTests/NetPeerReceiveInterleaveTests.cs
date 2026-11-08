@@ -63,9 +63,10 @@ public sealed class NetPeerReceiveInterleaveTests
 		peers.AssertServerBurstArrived();
 	}
 
-	[TestCase(0, 1)]
-	[TestCase(1, 0)]
-	public void QueuedAcknowledgementIsReadBeforeOverdueRetransmission(int interval, int expectedResends)
+	[TestCase(0, 2u, 1)]
+	[TestCase(1, 2u, 0)]
+	[TestCase(1, 0u, 0)]
+	public void QueuedAcknowledgementIsReadBeforeOverdueRetransmission(int interval, uint frameCounter, int expectedResends)
 	{
 		using var peers = new ConnectedPeers(interval);
 		var connection = peers.Server.Connections[0];
@@ -84,7 +85,7 @@ public sealed class NetPeerReceiveInterleaveTests
 		var channel = channels.Cast<object?>().Single(c => c != null)!;
 		channel.GetType().GetField("m_resendDelay", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(channel, 0d);
 		var resends = connection.Statistics.ResentMessages;
-		SetField(peers.Server, "m_frameCounter", 2u); // Process ACKs this heartbeat.
+		SetField(peers.Server, "m_frameCounter", frameCounter);
 		Pulse(peers.Server);
 
 		Assert.That(connection.Statistics.ResentMessages - resends, Is.EqualTo(expectedResends),
