@@ -327,6 +327,10 @@ namespace Lidgren.Network
 			// CMU14: interleaved reads share the existing whole-heartbeat flood budget.
 			int packetsReceived = 0;
 			int bytesReceived = 0;
+			// CMU14: drain inputs and ACKs already waiting before sending or scanning for retransmits.
+			// Use the same flood budget as interleaved and final reads; default peers keep their original schedule.
+			if (m_configuration.m_receiveInterleavePacketInterval > 0)
+				ReceiveIncomingMessages(0, ref packetsReceived, ref bytesReceived);
 
 			double now = NetTime.Now;
 			double delta = now - m_lastHeartbeat;

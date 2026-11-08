@@ -14,8 +14,8 @@ namespace UnitTests;
 public sealed class NetPeerReceiveInterleaveTests
 {
 	[TestCase(0, 3)]
-	[TestCase(1, 1)]
-	public void IncomingInputIsReleasedBetweenCompletedConnectionSends(int interval, int expectedSends)
+	[TestCase(1, 0)]
+	public void QueuedInputIsReleasedBeforeOutgoingConnectionBurst(int interval, int expectedSends)
 	{
 		using var peers = new ConnectedPeers(interval);
 		var received = new List<(int Value, long Sends)>();
@@ -35,7 +35,7 @@ public sealed class NetPeerReceiveInterleaveTests
 		Pulse(peers.Server);
 
 		Assert.That(received, Is.EqualTo(new[] { (42, (long) expectedSends) }),
-			"Input should be released after the first completed send when enabled, or after the full burst when disabled.");
+			"Input already queued should be released before sending when enabled, or after the full burst when disabled.");
 		peers.AssertServerBurstArrived();
 	}
 
@@ -61,6 +61,36 @@ public sealed class NetPeerReceiveInterleaveTests
 		Assert.That(ReadValues(peers.Server), Is.EqualTo(new[] { 4 }),
 			"Messages left in the UDP socket must remain ordered and be processed on following heartbeats.");
 		peers.AssertServerBurstArrived();
+	}
+
+	[TestCase(0, 1)]
+	[TestCase(1, 0)]
+	public void QueuedAcknowledgementIsReadBeforeOverdueRetransmission(int interval, int expectedResends)
+	{
+		using var peers = new ConnectedPeers(interval);
+		var connection = peers.Server.Connections[0];
+		var client = peers.Clients.Single(c => c.Socket!.LocalEndPoint!.Equals(connection.RemoteEndPoint));
+		QueueMessage(peers.Server, connection, 91);
+		SetField(peers.Server, "m_frameCounter", 0u);
+		Pulse(peers.Server);
+		Pulse(client);
+		Assert.That(ReadValues(client), Is.EqualTo(new[] { 91 }));
+		SetField(client, "m_frameCounter", 2u);
+		Pulse(client); // Put the acknowledgement in the server socket without servicing it yet.
+		Assert.That(peers.Server.Socket!.Poll(1_000_000, System.Net.Sockets.SelectMode.SelectRead), Is.True);
+
+		// Make the already-acknowledged packet eligible for the timer resend without a timing-sensitive sleep.
+		var channels = (Array) typeof(NetConnection).GetField("m_sendChannels", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(connection)!;
+		var channel = channels.Cast<object?>().Single(c => c != null)!;
+		channel.GetType().GetField("m_resendDelay", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(channel, 0d);
+		var resends = connection.Statistics.ResentMessages;
+		SetField(peers.Server, "m_frameCounter", 2u); // Process ACKs this heartbeat.
+		Pulse(peers.Server);
+
+		Assert.That(connection.Statistics.ResentMessages - resends, Is.EqualTo(expectedResends),
+			"An ACK already queued at heartbeat entry should retire the reliable message before the resend scan.");
+		Pulse(client);
+		Assert.That(ReadValues(client), Is.Empty, "A reliable retransmission must never duplicate application delivery.");
 	}
 
 	private static void QueueMessage(NetPeer peer, NetConnection connection, int value)
