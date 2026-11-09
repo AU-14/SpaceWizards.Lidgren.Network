@@ -27,6 +27,7 @@ namespace Lidgren.Network
 		internal readonly object m_initializeLock = new object();
 		private uint m_frameCounter;
 		private double m_lastHeartbeat;
+		private int m_packetsSentSinceReceive; // CMU14
 		private double m_lastSocketBind = float.MinValue;
 		private double m_nextLimitDecay;
 		private NetUPnP? m_upnp;
@@ -323,6 +324,13 @@ namespace Lidgren.Network
 		private void Heartbeat()
 		{
 			VerifyNetworkThread();
+			// CMU14: interleaved reads share the existing whole-heartbeat flood budget.
+			int packetsReceived = 0;
+			int bytesReceived = 0;
+			// CMU14: drain inputs and ACKs already waiting before sending or scanning for retransmits.
+			// Use the same flood budget as interleaved and final reads; default peers keep their original schedule.
+			if (m_configuration.m_receiveInterleavePacketInterval > 0)
+				ReceiveIncomingMessages(0, ref packetsReceived, ref bytesReceived);
 
 			double now = NetTime.Now;
 			double delta = now - m_lastHeartbeat;
@@ -386,6 +394,9 @@ namespace Lidgren.Network
 							m_connections.RemoveAt(i);
 							m_connectionLookup.Remove((NetSocketAddress)conn.RemoteEndPoint);
 						}
+						// CMU14: the connection has flushed its shared send buffer. Receiving here
+						// can append connections, which does not disturb this reverse traversal.
+						ReceiveBetweenSends(ref packetsReceived, ref bytesReceived);
 					}
 				}
 				m_executeFlushSendQueue = false;
@@ -402,6 +413,7 @@ namespace Lidgren.Network
 						Recycle(om);
 
 					SendPacket(len, unsent.Item1, 1, out bool connReset);
+					ReceiveBetweenSends(ref packetsReceived, ref bytesReceived); // CMU14
 				}
 
 				// decay rapid connection times so you can rejoin reasonably
@@ -420,6 +432,23 @@ namespace Lidgren.Network
 			}
 
 			m_upnp?.CheckForDiscoveryTimeout();
+			ReceiveIncomingMessages(1000, ref packetsReceived, ref bytesReceived); // CMU14
+		}
+
+		// CMU14 Begin
+		private void ReceiveBetweenSends(ref int packetsReceived, ref int bytesReceived)
+		{
+			int interval = m_configuration.m_receiveInterleavePacketInterval;
+			if (interval > 0 && m_packetsSentSinceReceive >= interval)
+				ReceiveIncomingMessages(0, ref packetsReceived, ref bytesReceived);
+		}
+
+		private void ReceiveIncomingMessages(int pollMicroseconds, ref int packetsReceived, ref int bytesReceived)
+		{
+			m_packetsSentSinceReceive = 0;
+			if (packetsReceived >= m_configuration.m_maximumPacketsPerHeartbeat ||
+			    bytesReceived >= m_configuration.m_maximumBytesPerHeartbeat)
+				return;
 
 			//
 			// read from socket
@@ -427,19 +456,18 @@ namespace Lidgren.Network
 			if (m_socket == null)
 				return;
 
-			if (!m_socket.Poll(1000, SelectMode.SelectRead)) // wait up to 1 ms for data to arrive
+			if (!m_socket.Poll(pollMicroseconds, SelectMode.SelectRead)) // Extra checks do not wait.
 				return;
 
 			//if (m_socket == null || m_socket.Available < 1)
 			//	return;
 
 			// update now
-			now = NetTime.Now;
+			double now = NetTime.Now;
 
 			try
 			{
-				int packetsReceived = 0;
-				int bytesReceived = 0;
+				// Use the heartbeat's shared packet/byte counters.
 				do
 				{
 					int packetBytes = ReceiveSocketData(now);
@@ -472,6 +500,8 @@ namespace Lidgren.Network
 				}
 			}
 		}
+
+		// CMU14 End
 
 		private int ReceiveSocketData(double now)
 		{
