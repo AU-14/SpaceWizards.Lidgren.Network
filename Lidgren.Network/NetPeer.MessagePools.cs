@@ -1,6 +1,7 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Text;
+using System.Threading; // CMU14
 
 namespace Lidgren.Network
 {
@@ -9,7 +10,7 @@ namespace Lidgren.Network
 		private const int c_storagePoolMinBucketSize = 16;
 		private const int c_storagePoolMaxBucketSize = 1024 * 1024;
 
-		internal NetQueue<byte[]>[]? m_storagePools;
+		internal Queue<byte[]>[]? m_storagePools; // CMU14: one lock per size bucket, without nested queue locks.
 		private NetQueue<NetOutgoingMessage>? m_outgoingMessagesPool;
 		private NetQueue<NetIncomingMessage>? m_incomingMessagesPool;
 
@@ -45,21 +46,25 @@ namespace Lidgren.Network
 				return new byte[minimumCapacityInBytes];
 
 			var bucket = GetStorageBucket(minimumCapacityInBytes);
+			// CMU14 Begin: independent buffer sizes must not wait on a peer-wide storage lock.
 			if (bucket >= 0)
 			{
-				lock (pools)
+				var pool = pools[bucket];
+				lock (pool)
 				{
-					if (pools[bucket].TryDequeue(out var storage))
+					if (pool.Count > 0)
 					{
-						m_storageSlotsUsedCount--;
-						m_storagePoolBytes -= storage.Length;
+						var storage = pool.Dequeue();
+						Interlocked.Add(ref m_storagePoolBytes, -storage.Length);
+						Interlocked.Decrement(ref m_storageSlotsUsedCount);
 						return storage;
 					}
 				}
 			}
+			// CMU14 End
 
 			var allocationSize = GetStorageBucketSize(minimumCapacityInBytes);
-			m_statistics.m_bytesAllocated += allocationSize;
+			Interlocked.Add(ref m_statistics.m_bytesAllocated, allocationSize); // CMU14: send workers allocate concurrently.
 			return new byte[allocationSize];
 		}
 
@@ -73,24 +78,32 @@ namespace Lidgren.Network
 			if (bucket < 0 || storage.Length != GetStorageBucketSize(storage.Length))
 				return;
 
-			lock (pools)
+			// CMU14 Begin: reserve globally bounded capacity without blocking unrelated buckets.
+			int count;
+			do
 			{
-				if (m_storageSlotsUsedCount >= m_maxCacheCount)
+				count = Volatile.Read(ref m_storageSlotsUsedCount);
+				if (count >= m_maxCacheCount)
 					return;
-
-				m_storageSlotsUsedCount++;
-				m_storagePoolBytes += storage.Length;
-				pools[bucket].Enqueue(storage);
 			}
+			while (Interlocked.CompareExchange(ref m_storageSlotsUsedCount, count + 1, count) != count);
+
+			// Account before publishing: a renter may immediately dequeue and subtract the buffer.
+			Interlocked.Add(ref m_storagePoolBytes, storage.Length);
+			var pool = pools[bucket];
+			lock (pool)
+				pool.Enqueue(storage);
+			// CMU14 End
 		}
 
-		private static NetQueue<byte[]>[] CreateStoragePools()
+		// CMU14: storage needs only enqueue/dequeue, so use the bucket's monitor instead of a second lock.
+		private static Queue<byte[]>[] CreateStoragePools()
 		{
 			var bucketCount = GetStorageBucket(c_storagePoolMaxBucketSize) + 1;
-			var pools = new NetQueue<byte[]>[bucketCount];
+			var pools = new Queue<byte[]>[bucketCount];
 			for (var i = 0; i < pools.Length; i++)
 			{
-				pools[i] = new NetQueue<byte[]>(4);
+				pools[i] = new Queue<byte[]>(4);
 			}
 
 			return pools;

@@ -1,4 +1,4 @@
-﻿/* Copyright (c) 2010 Michael Lidgren
+/* Copyright (c) 2010 Michael Lidgren
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software
 and associated documentation files (the "Software"), to deal in the Software without
@@ -24,6 +24,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 using System;
 using System.Text;
 using System.Diagnostics;
+using System.Threading; // CMU14
 
 namespace Lidgren.Network
 {
@@ -104,7 +105,7 @@ namespace Lidgren.Network
 		/// <summary>
 		/// Gets the number of bytes allocated (and possibly garbage collected) for message storage
 		/// </summary>
-		public long StorageBytesAllocated { get { return m_bytesAllocated; } }
+		public long StorageBytesAllocated { get { return Interlocked.Read(ref m_bytesAllocated); } } // CMU14
 
 		/// <summary>
 		/// Gets the number of bytes in the recycled pool
@@ -120,8 +121,7 @@ namespace Lidgren.Network
 					return 0;
 				}
 
-				lock (pool)
-					return m_peer.m_storagePoolBytes;
+				return Volatile.Read(ref m_peer.m_storagePoolBytes); // CMU14: counters are atomic across independent buckets.
 			}
 		}
 
